@@ -11,6 +11,8 @@ from mcp.server import Server
 from mcp.types import Tool, ServerResult, TextContent
 from contextlib import closing
 from typing import Optional, Any
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
 
 # 配置日志 / Configure logging
 logging.basicConfig(
@@ -30,14 +32,28 @@ class SnowflakeConnection:
         # 初始化配置信息 / Initialize configuration
         self.config = {
             "user": os.getenv("SNOWFLAKE_USER"),
-            "password": os.getenv("SNOWFLAKE_PASSWORD"),
             "account": os.getenv("SNOWFLAKE_ACCOUNT"),
             "database": os.getenv("SNOWFLAKE_DATABASE"),
             "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE"),
+            "private_key": os.getenv("SNOWFLAKE_PRIVATE_KEY")
         }
         self.conn: Optional[snowflake.connector.SnowflakeConnection] = None
-        logger.info(f"Initialized with config (excluding password): {json.dumps({k:v for k,v in self.config.items() if k != 'password'})}")
-    
+        logger.info(f"Initialized with config (excluding password): {json.dumps({k:v for k,v in self.config.items() if k != 'password' and k != 'private_key'})}")
+
+    def convert_snowflake_private_key_pair_to_der_format(self, private_key_str: str) -> bytes:
+        # Convert the private key string into a usable key object
+        private_key_obj = serialization.load_pem_private_key(
+            private_key_str.encode(), password=None, backend=default_backend()  # No password as the key is unencrypted
+        )
+
+        # Convert to DER format
+        private_key_der = private_key_obj.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        return private_key_der
+        
     def ensure_connection(self) -> snowflake.connector.SnowflakeConnection:
         """
         确保数据库连接可用，如果连接不存在或已断开则重新建立连接
@@ -48,7 +64,11 @@ class SnowflakeConnection:
             if self.conn is None:
                 logger.info("Creating new Snowflake connection...")
                 self.conn = snowflake.connector.connect(
-                    **self.config,
+                    user=self.config.get("user"),
+                    private_key=self.convert_snowflake_private_key_pair_to_der_format(self.config.get("private_key")),
+                    account=self.config.get("account"),
+                    warehouse=self.config.get("warehouse"),
+                    database=self.config.get("database"),
                     client_session_keep_alive=True,
                     network_timeout=15,
                     login_timeout=15
